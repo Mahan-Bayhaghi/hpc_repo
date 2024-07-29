@@ -12,8 +12,12 @@
 #include<unistd.h>
 
 #define MAX_PAYLOAD_SIZE 1500
+<<<<<<< HEAD
 #define NUMBER_OF_THREADS 3
 #define THREAD_MEM_SIZE 300
+=======
+#define NUMBER_OF_THREADS 6
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
 
 typedef struct {
     int id;
@@ -40,9 +44,11 @@ struct Arguments
     pcap_t* handle;
     segment_t** segments_ptr;
     int* mem_cnt;
+    int thread_id;
 } typedef Arguments;
 
-pthread_mutex_t mutex;
+pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t next_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void* runner(void* args){
 
@@ -51,12 +57,22 @@ void* runner(void* args){
     pcap_t* handle = arguments->handle;
     segment_t** segments_ptr = arguments->segments_ptr;
     int* mem_cnt = arguments->mem_cnt;
+<<<<<<< HEAD
     printf("-Arguments received\n");
        
+=======
+    int thread_id = arguments->thread_id;
+    
+    pthread_mutex_lock(&print_mutex);
+    printf("thread with id %d initialized\n", thread_id);
+    pthread_mutex_unlock(&print_mutex);
+
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
     struct pcap_pkthdr pkthdr;
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&next_mutex);
     u_char* packet = pcap_next(handle, &pkthdr);
+<<<<<<< HEAD
     pthread_mutex_unlock(&mutex);
     printf("-Packet received\n");
     
@@ -68,25 +84,52 @@ void* runner(void* args){
     }
 
     printf("-Parsing\n");
+=======
+    pthread_mutex_unlock(&next_mutex);
+
+    pthread_mutex_lock(&print_mutex);
+    printf("thread with id %d captured next packet\n", thread_id);
+    pthread_mutex_unlock(&print_mutex);
+
+    // loaded and ready
+
+    if (segments_ptr == NULL){
+        pthread_mutex_lock(&print_mutex);
+        printf("segment pointer was null and got reallocated\n");
+        pthread_mutex_unlock(&print_mutex);
+        segments_ptr = (segment_t**)malloc(sizeof(segment_t*));
+    }
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
 
     struct ether_header *eth_header = (struct ether_header *)packet;
     if (ntohs(eth_header->ether_type) == ETHERTYPE_IP) {
         struct ip *ip_header = (struct ip *)(packet + sizeof(struct ether_header));
         if (ip_header->ip_p == IPPROTO_UDP) {
+<<<<<<< HEAD
             printf("-Found UDP packet\n");
             pthread_mutex_lock(&mutex);
+=======
+            pthread_mutex_lock(&next_mutex);
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
             udp_packet_count++;
-            pthread_mutex_unlock(&mutex);
+            pthread_mutex_unlock(&next_mutex);
             
             struct udphdr *udp_header = (struct udphdr *)((u_char*)ip_header + sizeof(struct ip));
             // int id = ntohs(udp_header->uh_sport);
             char *payload = (char *)((u_char*)udp_header + sizeof(struct udphdr));
             int payload_len = ntohs(udp_header->uh_ulen) - sizeof(struct udphdr);
 
+<<<<<<< HEAD
             printf("-Payload :");
             for(int i = 0;i<payload_len;i++)
                 printf("%c", payload[i]);
             printf("\n");
+=======
+            pthread_mutex_lock(&print_mutex);
+            printf("ID : ");
+            printf("payload : %x\n", payload);
+            pthread_mutex_unlock(&print_mutex);
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
             
             // Check for the SEG{} pattern anywhere in the payload
             for (int i = 0; i <= payload_len - 5; i++) {
@@ -140,12 +183,18 @@ int main(int argc, char *argv[]) {
     // following shows that pcap_next works
     // struct pcap_pkthdr pkthdr;
     // u_char* packet = pcap_next(handle, &pkthdr);
+<<<<<<< HEAD
     // printf("%d\n", ()&packet);
+=======
+    // printf("%d\n", &packet);
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
     // printf("%d\n", pkthdr.len);
 
 
-    struct Arguments args_arr[NUMBER_OF_THREADS];
+    struct Arguments *args_arr[NUMBER_OF_THREADS];
+    
     pthread_t threads[NUMBER_OF_THREADS];
+<<<<<<< HEAD
     int mem_cnt[NUMBER_OF_THREADS];
     segment_t segments[THREAD_MEM_SIZE * NUMBER_OF_THREADS];
     // pthread_t tid[NUMBER_OF_THREADS];
@@ -164,6 +213,26 @@ int main(int argc, char *argv[]) {
         printf("Thread Output : %d\n", pthread_join(threads[i], NULL));
         // pthread_join(threads[i], NULL);
     }
+=======
+    pthread_t thread_ids[NUMBER_OF_THREADS];
+
+    for (int i=0; i<NUMBER_OF_THREADS; i++){
+        
+        args_arr[i] = (struct Arguments*) malloc(sizeof(struct Arguments));
+        args_arr[i]->handle = handle;
+        args_arr[i]->mem_cnt = (int*) malloc(sizeof(int));
+        args_arr[i]->segments_ptr = (segment_t**) malloc(sizeof(segment_t*));
+        args_arr[i]->thread_id = i;
+        
+        printf("args is %d\n", args_arr[i]);
+        // args_arr[i] = args;
+        // thread_ids[i] = (pthread_t) malloc(sizeof(pthread_t));
+        pthread_create(&threads[i] , NULL, runner, (void*) args_arr[i]);
+    }
+    
+    for (int i=0; i<NUMBER_OF_THREADS; i++)
+        printf("__join -> %d\n", pthread_join(threads[i], NULL));
+>>>>>>> 6a2b53bc65cda986d0cad8001f0a22d837d62b03
 
 
     // if (pcap_loop(handle, 0, packet_handler, (u_char *)&segments) < 0) {
@@ -171,7 +240,7 @@ int main(int argc, char *argv[]) {
     //     return 2;
     // }
 
-    sleep(3);
+    // sleep(3);
 
     pcap_close(handle);
 
