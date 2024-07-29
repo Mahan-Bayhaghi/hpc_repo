@@ -1,0 +1,8 @@
+192.168.1.116
+user: hamed
+pass: 456
+
+
+
+binary path:
+/home/hamed/bin
