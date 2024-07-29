@@ -12,7 +12,7 @@
 #include<unistd.h>
 
 #define MAX_PAYLOAD_SIZE 1500
-#define NUMBER_OF_THREADS 4
+#define NUMBER_OF_THREADS 6
 
 typedef struct {
     int id;
@@ -74,6 +74,7 @@ struct Arguments
     pcap_t* handle;
     segment_t** segments_ptr;
     int* mem_cnt;
+    int thread_id;
 } typedef Arguments;
 
 pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -85,17 +86,30 @@ void* runner(void* args){
     pcap_t* handle = arguments->handle;
     segment_t** segments_ptr = arguments->segments_ptr;
     int* mem_cnt = arguments->mem_cnt;
+    int thread_id = arguments->thread_id;
     
+    pthread_mutex_lock(&print_mutex);
+    printf("thread with id %d initialized\n", thread_id);
+    pthread_mutex_unlock(&print_mutex);
+
     struct pcap_pkthdr pkthdr;
 
     pthread_mutex_lock(&next_mutex);
     u_char* packet = pcap_next(handle, &pkthdr);
     pthread_mutex_unlock(&next_mutex);
-    
+
+    pthread_mutex_lock(&print_mutex);
+    printf("thread with id %d captured next packet\n", thread_id);
+    pthread_mutex_unlock(&print_mutex);
+
     // loaded and ready
 
-    if (segments_ptr == NULL)
+    if (segments_ptr == NULL){
+        pthread_mutex_lock(&print_mutex);
+        printf("segment pointer was null and got reallocated\n");
+        pthread_mutex_unlock(&print_mutex);
         segments_ptr = (segment_t**)malloc(sizeof(segment_t*));
+    }
 
     struct ether_header *eth_header = (struct ether_header *)packet;
     if (ntohs(eth_header->ether_type) == ETHERTYPE_IP) {
@@ -111,7 +125,8 @@ void* runner(void* args){
             int payload_len = ntohs(udp_header->uh_ulen) - sizeof(struct udphdr);
 
             pthread_mutex_lock(&print_mutex);
-            printf("payload : %s\n", payload);
+            printf("ID : ");
+            printf("payload : %x\n", payload);
             pthread_mutex_unlock(&print_mutex);
             
             // Check for the SEG{} pattern anywhere in the payload
@@ -171,25 +186,26 @@ int main(int argc, char *argv[]) {
 
 
     struct Arguments *args_arr[NUMBER_OF_THREADS];
-
-    printf("this is %d\n", args_arr[0]);
+    
     pthread_t threads[NUMBER_OF_THREADS];
+    pthread_t thread_ids[NUMBER_OF_THREADS];
 
     for (int i=0; i<NUMBER_OF_THREADS; i++){
-        pthread_t tid;
-
+        
         args_arr[i] = (struct Arguments*) malloc(sizeof(struct Arguments));
         args_arr[i]->handle = handle;
         args_arr[i]->mem_cnt = (int*) malloc(sizeof(int));
         args_arr[i]->segments_ptr = (segment_t**) malloc(sizeof(segment_t*));
-
+        args_arr[i]->thread_id = i;
+        
         printf("args is %d\n", args_arr[i]);
         // args_arr[i] = args;
-        threads[i] = pthread_create(&tid, NULL, runner, (void*) args_arr[i]);
+        // thread_ids[i] = (pthread_t) malloc(sizeof(pthread_t));
+        pthread_create(&threads[i] , NULL, runner, (void*) args_arr[i]);
     }
     
     for (int i=0; i<NUMBER_OF_THREADS; i++)
-        pthread_join(threads[i], NULL);
+        printf("__join -> %d\n", pthread_join(threads[i], NULL));
 
 
     // if (pcap_loop(handle, 0, packet_handler, (u_char *)&segments) < 0) {
