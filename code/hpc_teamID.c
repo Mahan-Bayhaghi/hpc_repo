@@ -12,7 +12,7 @@
 #include<unistd.h>
 
 #define MAX_PAYLOAD_SIZE 1500
-#define NUMBER_OF_THREADS 16
+#define NUMBER_OF_THREADS 4
 
 typedef struct {
     int id;
@@ -76,7 +76,8 @@ struct Arguments
     int* mem_cnt;
 } typedef Arguments;
 
-pthread_mutex_t mutex;
+pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t next_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void* runner(void* args){
 
@@ -87,9 +88,9 @@ void* runner(void* args){
     
     struct pcap_pkthdr pkthdr;
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&next_mutex);
     u_char* packet = pcap_next(handle, &pkthdr);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&next_mutex);
     
     // loaded and ready
 
@@ -100,18 +101,18 @@ void* runner(void* args){
     if (ntohs(eth_header->ether_type) == ETHERTYPE_IP) {
         struct ip *ip_header = (struct ip *)(packet + sizeof(struct ether_header));
         if (ip_header->ip_p == IPPROTO_UDP) {
-            pthread_mutex_lock(&mutex);
+            pthread_mutex_lock(&next_mutex);
             udp_packet_count++;
-            pthread_mutex_unlock(&mutex);
+            pthread_mutex_unlock(&next_mutex);
             
             struct udphdr *udp_header = (struct udphdr *)((u_char*)ip_header + sizeof(struct ip));
             int id = ntohs(udp_header->uh_sport);
             char *payload = (char *)((u_char*)udp_header + sizeof(struct udphdr));
             int payload_len = ntohs(udp_header->uh_ulen) - sizeof(struct udphdr);
 
-            pthread_mutex_lock(&mutex);
+            pthread_mutex_lock(&print_mutex);
             printf("payload : %s\n", payload);
-            pthread_mutex_unlock(&mutex);
+            pthread_mutex_unlock(&print_mutex);
             
             // Check for the SEG{} pattern anywhere in the payload
             for (int i = 0; i <= payload_len - 5; i++) {
@@ -163,24 +164,28 @@ int main(int argc, char *argv[]) {
     }
 
     // following shows that pcap_next works
-    struct pcap_pkthdr pkthdr;
-    u_char* packet = pcap_next(handle, &pkthdr);
-    printf("%d\n", &packet);
-    printf("%d\n", pkthdr.len);
+    // struct pcap_pkthdr pkthdr;
+    // u_char* packet = pcap_next(handle, &pkthdr);
+    // printf("%d\n", &packet);
+    // printf("%d\n", pkthdr.len);
 
 
-    struct Arguments args_arr[NUMBER_OF_THREADS];
+    struct Arguments *args_arr[NUMBER_OF_THREADS];
+
+    printf("this is %d\n", args_arr[0]);
     pthread_t threads[NUMBER_OF_THREADS];
 
     for (int i=0; i<NUMBER_OF_THREADS; i++){
         pthread_t tid;
-        struct Arguments args;
-        args.handle = handle;
-        args.mem_cnt = (int*) malloc(sizeof(int));
-        args.segments_ptr = (segment_t**) malloc(sizeof(segment_t*));
 
-        args_arr[i] = args;
-        threads[i] = pthread_create(&tid, NULL, runner, (void*) &args);
+        args_arr[i] = (struct Arguments*) malloc(sizeof(struct Arguments));
+        args_arr[i]->handle = handle;
+        args_arr[i]->mem_cnt = (int*) malloc(sizeof(int));
+        args_arr[i]->segments_ptr = (segment_t**) malloc(sizeof(segment_t*));
+
+        printf("args is %d\n", args_arr[i]);
+        // args_arr[i] = args;
+        threads[i] = pthread_create(&tid, NULL, runner, (void*) args_arr[i]);
     }
     
     for (int i=0; i<NUMBER_OF_THREADS; i++)
@@ -192,7 +197,7 @@ int main(int argc, char *argv[]) {
     //     return 2;
     // }
 
-    sleep(3);
+    // sleep(3);
 
     pcap_close(handle);
 
