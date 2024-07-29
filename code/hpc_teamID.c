@@ -125,7 +125,8 @@ void* runner(void* args){
             int payload_len = ntohs(udp_header->uh_ulen) - sizeof(struct udphdr);
 
             pthread_mutex_lock(&print_mutex);
-            printf("ID : ");
+            printf("Thread ID : %d\n", thread_id);
+            printf("id : %d\n", id);
             printf("payload : %x\n", payload);
             pthread_mutex_unlock(&print_mutex);
             
