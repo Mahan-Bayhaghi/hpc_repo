@@ -7,9 +7,8 @@
 #include <netinet/udp.h>
 #include <netinet/ether.h>
 #include <time.h>
-
-#include<pthread.h>
-#include<unistd.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #define MAX_PAYLOAD_SIZE 1500
 #define NUMBER_OF_THREADS 4
@@ -20,8 +19,19 @@ typedef struct {
     char payload[MAX_PAYLOAD_SIZE];
 } segment_t;
 
+typedef struct {
+    pcap_t* handle;
+    segment_t* segments;
+    int* mem_cnt;
+    int thread_id;
+} Arguments;
+
 int segment_count = 0;
 unsigned int udp_packet_count = 0;
+
+pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t next_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t segment_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void write_segments_to_json(segment_t *segments, int count, const char *filename) {
     json_t *json_segments = json_array();
@@ -35,79 +45,53 @@ void write_segments_to_json(segment_t *segments, int count, const char *filename
     json_decref(json_segments);
 }
 
-struct Arguments
-{
-    pcap_t* handle;
-    segment_t** segments_ptr;
-    int* mem_cnt;
-    int thread_id;
-} typedef Arguments;
-
-pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t next_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void* runner(void* args){
+void* runner(void* args) {
     printf("-Thread started\n");
-    struct Arguments* arguments = (struct Arguments*) args;
+    Arguments* arguments = (Arguments*)args;
     pcap_t* handle = arguments->handle;
-    segment_t** segments_ptr = arguments->segments_ptr;
+    segment_t* segments = arguments->segments;
     int* mem_cnt = arguments->mem_cnt;
-    printf("-Arguments received\n");
-       
     int thread_id = arguments->thread_id;
-    
+
     pthread_mutex_lock(&print_mutex);
     printf("thread with id %d initialized\n", thread_id);
     pthread_mutex_unlock(&print_mutex);
 
     struct pcap_pkthdr pkthdr;
 
-    int flag = 1;
-    while (flag) {
-
+    while (1) {
+        printf("thread %d waiting for next lock %p\n", thread_id, &next_mutex);
         pthread_mutex_lock(&next_mutex);
+        printf("thread %d accuired next lock %p\n", thread_id, &next_mutex);
         u_char* packet = pcap_next(handle, &pkthdr);
-        if (packet == NULL){
-            printf("no more packets available for thread with ID %d\n", thread_id);
-            pthread_mutex_unlock(&next_mutex);
-            pthread_exit(NULL);
-            return;
-        }
         pthread_mutex_unlock(&next_mutex);
-
-        pthread_mutex_lock(&print_mutex);
-        // printf("thread with id %d captured next packet\n", thread_id);
-        pthread_mutex_unlock(&print_mutex);
-
-        // loaded and ready
-
-        if (segments_ptr == NULL){
+        printf("thread %d released next lock %p\n", thread_id, &next_mutex);
+        if (packet == NULL) {
             pthread_mutex_lock(&print_mutex);
-            printf("segment pointer was null and got reallocated\n");
+            printf("no more packets available for thread with ID %d\n", thread_id);
             pthread_mutex_unlock(&print_mutex);
-            segments_ptr = (segment_t**)malloc(sizeof(segment_t*));
+            pthread_exit(NULL);
         }
 
         struct ether_header *eth_header = (struct ether_header *)packet;
         if (ntohs(eth_header->ether_type) == ETHERTYPE_IP) {
             struct ip *ip_header = (struct ip *)(packet + sizeof(struct ether_header));
             if (ip_header->ip_p == IPPROTO_UDP) {
+                pthread_mutex_lock(&print_mutex);
                 // printf("-Found UDP packet\n");
-                pthread_mutex_lock(&next_mutex);
+                pthread_mutex_unlock(&print_mutex);
+
+                pthread_mutex_lock(&segment_mutex);
                 udp_packet_count++;
-                pthread_mutex_unlock(&next_mutex);
-                
+                pthread_mutex_unlock(&segment_mutex);
+
                 struct udphdr *udp_header = (struct udphdr *)((u_char*)ip_header + sizeof(struct ip));
-                // int id = ntohs(udp_header->uh_sport);
+                int id = ntohs(udp_header->uh_sport);
                 char *payload = (char *)((u_char*)udp_header + sizeof(struct udphdr));
                 int payload_len = ntohs(udp_header->uh_ulen) - sizeof(struct udphdr);
 
-                // printf("-Payload :");
-                // for(int i = 0;i<payload_len;i++)
-                    // printf("%c", payload[i]);
-                // printf("\n");
-                
-                // Check for the SEG{} pattern anywhere in the payload
+                // printf("packet id is %d\n", id);
+
                 for (int i = 0; i <= payload_len - 5; i++) {
                     if (strncmp(payload + i, "SEG{", 4) == 0) {
                         char *start = payload + i + 4;
@@ -115,16 +99,12 @@ void* runner(void* args){
                         if (end) {
                             int seg_len = end - start;
                             if (seg_len > 0 && seg_len < MAX_PAYLOAD_SIZE) {
-                                // *segments_ptr = realloc(*segments_ptr, (segment_count + 1) * sizeof(segment_t));
-                                segment_t*one_seg = (segment_t*)malloc(sizeof(segment_t));
-                                strncpy(one_seg->payload, start, seg_len);
-                                printf("seg : %s\n", one_seg->payload);
-                                (*mem_cnt) = (*mem_cnt) + 1;
-
-                                // strncpy((*segments_ptr)[segment_count].payload, start, seg_len);
-                                // (*segments_ptr)[segment_count].payload[seg_len] = '\0';
-                                // (*segments_ptr)[segment_count].id = id;
-                                // segment_count++;
+                                pthread_mutex_lock(&segment_mutex);
+                                strncpy(segments[*mem_cnt].payload, start, seg_len);
+                                segments[*mem_cnt].payload[seg_len] = '\0';
+                                segments[*mem_cnt].id = id;
+                                (*mem_cnt)++;
+                                pthread_mutex_unlock(&segment_mutex);
                                 break; // Stop after finding the first valid segment in the payload
                             }
                         }
@@ -133,9 +113,7 @@ void* runner(void* args){
             }
         }
     }
-
 }
-
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -146,73 +124,57 @@ int main(int argc, char *argv[]) {
     clock_t start_time = clock();
 
     char *pcap_file = argv[1];
-    char *json_file = "temp/output.json";
+    char *json_file = "./temp/output.json";
     pcap_t *handle;
     char errbuf[PCAP_ERRBUF_SIZE];
-    // segment_t *segments = NULL;
-
 
     handle = pcap_open_offline(pcap_file, errbuf);
 
     if (handle == NULL) {
-        fprintf(stderr, "Could not open adjusted pcap file %s: %s\n", pcap_file, errbuf);
+        fprintf(stderr, "Could not open pcap file %s: %s\n", pcap_file, errbuf);
         return 2;
     }
 
-    // following shows that pcap_next works
-    // struct pcap_pkthdr pkthdr;
-    // u_char* packet = pcap_next(handle, &pkthdr);
-    // printf("%d\n", ()&packet);
-    // printf("%d\n", &packet);
-    // printf("%d\n", pkthdr.len);
-
-
-    struct Arguments *args_arr[NUMBER_OF_THREADS];
-    
     pthread_t threads[NUMBER_OF_THREADS];
-    int mem_cnt[NUMBER_OF_THREADS];
+    Arguments *args_arr[NUMBER_OF_THREADS];
     segment_t segments[THREAD_MEM_SIZE * NUMBER_OF_THREADS];
-    // pthread_t tid[NUMBER_OF_THREADS];
+    int mem_cnt[NUMBER_OF_THREADS] = {0};
 
-    for (int i=0; i<NUMBER_OF_THREADS; i++){
-        struct Arguments args;
-        args.handle = handle;
-        args.mem_cnt = &mem_cnt[i];
-        args.segments_ptr = &segments[i*THREAD_MEM_SIZE];
-        args.thread_id = i;
-        // printf("id is %d\n", i);
-        // args_arr[i] = args;
-        pthread_create(&threads[i], NULL, runner, (void*) &args);
-        // free(args);
+    for (int i = 0; i < NUMBER_OF_THREADS; i++) {
+        args_arr[i] = malloc(sizeof(Arguments));
+        args_arr[i]->handle = handle;
+        args_arr[i]->segments = segments + (i * THREAD_MEM_SIZE);
+        args_arr[i]->mem_cnt = &mem_cnt[i];
+        args_arr[i]->thread_id = i;
+        pthread_create(&threads[i], NULL, runner, (void*) args_arr[i]);
     }
 
-    printf("here\n");
-    for (int i=0; i<NUMBER_OF_THREADS; i++){
-        printf("Thread Output : %d\n", pthread_join(threads[i], NULL));
-        // pthread_join(threads[i], NULL);
+    for (int i = 0; i < NUMBER_OF_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+        free(args_arr[i]);
     }
 
-
-    // if (pcap_loop(handle, 0, packet_handler, (u_char *)&segments) < 0) {
-    //     fprintf(stderr, "Error processing pcap file: %s\n", pcap_geterr(handle));
-    //     return 2;
-    // }
-
-    // sleep(3);
-
-    int cnt = 0;
-    for (int i=0; i<NUMBER_OF_THREADS; i++) {
-        printf("thread with id %d captured %d flags\n", i, mem_cnt[i]);
-        cnt += mem_cnt[i];
+    // Concatenate all segments
+    int total_segments = 0;
+    for (int i = 0; i < NUMBER_OF_THREADS; i++) {
+        total_segments += mem_cnt[i];
     }
 
-    printf("Total SEGs captured : %d\n", cnt);
+    segment_t *all_segments = malloc(total_segments * sizeof(segment_t));
+    int index = 0;
+    for (int i = 0; i < NUMBER_OF_THREADS; i++) {
+        for (int j = 0; j < mem_cnt[i]; j++) {
+            all_segments[index++] = segments[i * THREAD_MEM_SIZE + j];
+        }
+    }
+
+    printf("Total SEGs captured: %d\n", total_segments);
 
     pcap_close(handle);
 
-    write_segments_to_json(segments, segment_count, json_file);
+    write_segments_to_json(all_segments, total_segments, json_file);
 
-    // free(segments);
+    free(all_segments);
 
     clock_t end_time = clock();
     double elapsed_time = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
