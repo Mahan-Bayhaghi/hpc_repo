@@ -101,7 +101,7 @@ void add_udp_packet(const uint8_t *packet_data, uint32_t length) {
 
     memcpy(udp_packets[udp_packet_count]->data, packet_data, length);
 
-    printf("shalus\n");
+    // printf("shalus\n");
     process_udp_packet(udp_packets[udp_packet_count]);
 
     udp_packet_count++;
@@ -323,7 +323,7 @@ int main(int argc, char *argv[]) {
         // udp_packet->payload_len = ntohs(udp_header->len) - sizeof(udp_hdr_t);
 
         if (i%150==0){
-            printf("id is %d\n", ntohs(udp_header->source));
+            // printf("id is %d\n", ntohs(udp_header->source));
             // printf("len of payload : %u\n", udp_packet->data);
         }
 
