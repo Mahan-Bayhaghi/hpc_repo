@@ -7,11 +7,11 @@ TARGET = hpc_teamID
 
 all: $(TARGET)
 
-$(TARGET): hpc_teamID_mercator.o
-	$(CC) -o $(TARGET) hpc_teamID_mercator.o $(LDFLAGS)
+$(TARGET): hpc_teamID.o
+	$(CC) -o $(TARGET) hpc_teamID.o $(LDFLAGS)
 
-hpc_teamID.o: hpc_teamID_mercator.c
-	$(CC) $(CFLAGS) -c hpc_teamID_mercator.c
+hpc_teamID.o: hpc_teamID.c
+	$(CC) $(CFLAGS) -c hpc_teamID.c
 
 clean:
 	rm -f $(TARGET) *.o
