@@ -14,7 +14,7 @@
 
 #define MAX_PAYLOAD_SIZE 1500
 #define NUMBER_OF_READER_THREADS 1
-#define NUMBER_OF_HANDLER_THREADS 4
+#define NUMBER_OF_HANDLER_THREADS 8
 #define THREAD_MEM_SIZE 300
 
 typedef struct {
@@ -172,10 +172,11 @@ typedef struct {
     char** payloads_arr;
     int* ids_arr;
     int* flags_arr;
+    int* reader_done;
 } ReaderArguments;
 
 
-#define NUM_ENTRIES 500     // maximum number of packets saved on RAM at the same time
+#define NUM_ENTRIES 1000    // maximum number of packets saved on RAM at the same time
 char** payloads_arr;        // an array of strings used to save payloads of packets on memory
 int* ids_arr;               // an array of int used to save ids of packets on memory
 int* flags_arr;             // an array of int (flag 0/1) used to save if an idx of these 3 arrays are processed or not
@@ -200,14 +201,14 @@ void* pcap_reader_runner(void* args) {
     char** payloads_arr_ptr = arguments->payloads_arr;
     int* ids_arr_ptr = arguments->ids_arr;
     int* flags_arr_ptr = arguments->flags_arr;
+    int* reader_done = arguments->reader_done;
+
 
     int reader_array_idx = 0;
 
     printf("- Reader thread initialized\n");
     printf("\tpayloads_arr_ptr: %p \n\tids_arr_ptr: %p \n\tflags_arr_ptr: %p\n", payloads_arr_ptr, ids_arr_ptr, flags_arr_ptr);
 
-    // TODO: uncomment following line if this array should be allocated in each thread (which is most probably unlikely)
-    // PayloadIDPair* payload_pairs_arr = (PayloadIDPair*)malloc(sizeof(PayloadIDPair) * 200);
     PayloadIDPair* payload_pairs_arr = (PayloadIDPair*)arguments->payload_pairs_arr;
     if (payload_pairs_arr == NULL){
         printf(" = well well well ...\n");
@@ -234,6 +235,7 @@ void* pcap_reader_runner(void* args) {
             printf("\t* Read %d packets\n", read);
             pthread_mutex_unlock(&print_mutex);
             flag = false;
+            *reader_done = 1; // Signal that reading is done
             break;
         }
         else{
@@ -256,7 +258,7 @@ void* pcap_reader_runner(void* args) {
                     char *payload = (char *)((u_char*)udp_header + sizeof(struct udphdr));
                     int payload_len = ntohs(udp_header->uh_ulen) - sizeof(struct udphdr);
 
-                    printf("here is shit\n");   
+                    // printf("here is shit\n");   
                     pthread_mutex_lock(&array_mutex);
                     strncpy(payloads_arr_ptr[reader_array_idx], payload, payload_len);
                     payloads_arr_ptr[reader_array_idx][payload_len] = '\0';  // Null-terminate the string
@@ -265,73 +267,23 @@ void* pcap_reader_runner(void* args) {
                     reader_array_idx += 1;
                     reader_array_idx %= NUM_ENTRIES;
                     pthread_mutex_unlock(&array_mutex);
-
-                    printf("here is not\n");
-
-                    /*
-                        threads are receiving null pointers because they have global access and 
-                        pointers are not passed directly.
-                        solution: pass pointers to arrays as argument
-                    */
-                    // pthread_mutex_lock(&array_mutex);
-                    // // printf("dangulusu\n");
-                    // // printf("ids_arr[9] = %d  ", ids_arr_ptr[9]);
-                    // segment_count++;
-                    // // printf("kdfjdangulusu\n");
-                    // pthread_mutex_unlock(&array_mutex);
-
-                    // how to solve this problem ?
-                    /*
-                        max len of payloads is 32 characters
-                        so get a relatively large array (say 5000) items that each item is 32 bit characters long
-                        so we don't need to malloc each time. just a initialization malloc
-                        fill each index with the new payload. also fill a responding id array for it
-                        threads should read from this large array and process it !!
-                    */
-
-                    // char *full_string = (char *)malloc(payload_len + 1);
-                    // if (full_string == NULL) {
-                    //     printf("here\n");
-                    //     perror("malloc");
-                    //     exit(EXIT_FAILURE);
-                    // }
-
-                    // memcpy(full_string, payload, payload_len);
-                    // full_string[payload_len] = '\0';
-                    // // printf("Full string: %s\n", full_string);
-                    
-                    // if (strstr(full_string, "SEG") != NULL) {
-                    //     // printf("Pattern 'SEG' found in the string.\n");
-                    //     segment_count++;
-                    // }
-                    // free(full_string);
-                    
-                    // PayloadIDPair pair;
-                    // pair.id = id;
-                    // pair.payload_len = payload_len;
-                    // pair.payload = malloc(payload_len + 1);  // Allocate memory for the payload plus null terminator
-                    // if (pair.payload == NULL) {
-                    //     fprintf(stderr, "Payload Memory Allocation Failed\n");
-                    //     exit(EXIT_FAILURE);
-                    // }
-                    // memcpy(pair.payload, payload, payload_len);
-                    // pair.payload[payload_len] = '\0';  // Null-terminate the payload string
-                    
-                    // if (payload_pairs_arr[*arr_idx] == 0)   // not allocated yet
-                        // payload_pairs_arr[*arr_idx] = (PayloadIDPair) malloc(sizeof(PayloadIDPair));
-
-                    // payload_pairs_arr[*arr_idx] = pair;
-                    // print("%d \n", payload_pairs_arr[*arr_idx]);
-                    // payload_pairs_arr[*arr_idx].id = id;
-                    // (*arr_idx)++;
-                    // if ((*arr_idx) >= 10) 
-                    //     break;
+                    // printf("here is not\n");
                 }
             }
         }
     }
 }
 
+
+typedef struct {
+    int thread_id;
+    char** payloads_arr_ptr;
+    int* ids_arr_ptr;
+    int* flags_arr_ptr;
+    int *reader_done;
+    int* read_cnt;
+    char** captured_segments;
+} HandlerArguments;
 
 pthread_mutex_t capture_mutex = PTHREAD_MUTEX_INITIALIZER; 
 /*
@@ -343,7 +295,84 @@ pthread_mutex_t capture_mutex = PTHREAD_MUTEX_INITIALIZER;
     if there reading packets by reader is done and no packet is in memory (non-processed), thread ends
 */
 void* packet_handler_runner(void* args){
+    HandlerArguments* arguments = (HandlerArguments*)args;
+    int thread_id = arguments->thread_id;
+    char** payloads_arr_ptr = arguments->payloads_arr_ptr;
+    int* ids_arr_ptr = arguments->ids_arr_ptr;
+    int* flags_arr_ptr = arguments->flags_arr_ptr;
+    int* reader_done = arguments->reader_done;
 
+    int* read_cnt = arguments->read_cnt;
+    char** captured_segments = arguments->captured_segments;
+
+    printf("- Worker thread initialized with id %d\n", thread_id);
+    printf("\tpayloads_arr_ptr: %p \n\tids_arr_ptr: %p \n\tflags_arr_ptr: %p\n", payloads_arr_ptr, ids_arr_ptr, flags_arr_ptr);
+
+    while (1) {
+        int found_packet = 0;
+        // pthread_mutex_lock(&array_mutex);
+        for (int i = 0; i < NUM_ENTRIES; i++) {
+            if (flags_arr_ptr[i] == 1) {
+                pthread_mutex_lock(&capture_mutex);
+                if (flags_arr_ptr[i] == 1) {
+                    flags_arr_ptr[i] = 0;  // Mark as processing
+                    pthread_mutex_unlock(&capture_mutex);
+
+                    found_packet += 1;
+
+                    int id = ids_arr_ptr[i];
+                    char* payload = payloads_arr_ptr[i];
+
+                    // printf("Thread %d processing packet with ID %d, payload: %s\n", thread_id, id, payload);
+
+                    // Search for SEG{something to capture} in the payload
+                    const char* pattern = "SEG{";
+                    char* payload_str = payload;
+                    char* end_of_payload = payload + strlen(payload);
+
+                    while (payload_str < end_of_payload) {
+                        char* start = strstr(payload_str, pattern);
+                        if (start && start < end_of_payload) {
+                            start += strlen(pattern);
+                            char* end = strchr(start, '}');
+                            if (end && end < end_of_payload) {
+                                size_t capture_len = end - start;
+                                char* capture = (char*)malloc(capture_len + 1);
+                                if (capture) {
+                                    strncpy(capture, start, capture_len);
+                                    capture[capture_len] = '\0';
+                                    printf("Thread %d captured: %s\n", thread_id, capture);
+                                    (*read_cnt)+=1;
+                                    free(capture);
+                                }
+                                payload_str = end + 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    pthread_mutex_unlock(&capture_mutex);
+                }
+                break;
+            }
+        }
+        // pthread_mutex_unlock(&array_mutex);
+
+        if (!found_packet) {
+            pthread_mutex_lock(&udp_packet_mutex);
+            int local_udp_packet_count = udp_packet_count;
+            pthread_mutex_unlock(&udp_packet_mutex);
+
+            if (*reader_done || local_udp_packet_count == 0) {
+                printf("Worker thread %d: no more packets to process, Total found signatures : <%d>,\t\t... terminating.\n", thread_id, *read_cnt);
+                break;
+            }
+        }
+    }
+    return NULL;
 }
 
 
@@ -360,8 +389,8 @@ int main(int argc, char *argv[]) {
     int (*ids_arr) = (int*) calloc(NUM_ENTRIES, sizeof(int));
     int (*flags_arr) = (int*) calloc(NUM_ENTRIES, sizeof(int));
 
-    for (int i=0; i<NUM_ENTRIES; i++)
-        printf("%d ", ids_arr[i]);
+    // for (int i=0; i<NUM_ENTRIES; i++)
+    //     printf("%d ", ids_arr[i]);
 
     if (payloads_arr == NULL || ids_arr == NULL) {
         perror("malloc");
@@ -389,13 +418,17 @@ int main(int argc, char *argv[]) {
     printf("pacp file opened succesfully\n");
 
     pthread_t reader_threads[NUMBER_OF_READER_THREADS];
+    pthread_t handler_threads[NUMBER_OF_HANDLER_THREADS];
+
     Arguments *args_arr[NUMBER_OF_READER_THREADS];
     segment_t segments[THREAD_MEM_SIZE * NUMBER_OF_READER_THREADS];
     int mem_cnt[NUMBER_OF_READER_THREADS] = {0};
 
+    int reading_done = 0;
+    // printf("reading done = %d\n", reading_done);
+
     // creating reader threads
     ReaderArguments *reader_args_arr[NUMBER_OF_READER_THREADS];
-
     for (int i = 0; i < NUMBER_OF_READER_THREADS; i++) {
         reader_args_arr[i] = malloc(sizeof(ReaderArguments));
         reader_args_arr[i]->handle = handle;
@@ -406,13 +439,43 @@ int main(int argc, char *argv[]) {
         reader_args_arr[i]->ids_arr = ids_arr;
         reader_args_arr[i]->payloads_arr = payloads_arr;
         reader_args_arr[i]->flags_arr = flags_arr;
+        reader_args_arr[i]->reader_done = &reading_done;
         pthread_create(&reader_threads[i], NULL, pcap_reader_runner, (void*)reader_args_arr[i]);
+    }
+
+
+    int** all_read_cnts = (int**) malloc(sizeof(int*) * NUMBER_OF_HANDLER_THREADS);
+    for (int i=0; i<NUMBER_OF_HANDLER_THREADS; i++){
+        all_read_cnts[i] = (int*) malloc(sizeof(int));
+    }
+    HandlerArguments *handler_args_arr[NUMBER_OF_HANDLER_THREADS];
+    for (int i=0; i<NUMBER_OF_HANDLER_THREADS; i++){
+        handler_args_arr[i] = malloc(sizeof(HandlerArguments));
+        handler_args_arr[i]->thread_id = i;
+        handler_args_arr[i]->payloads_arr_ptr = payloads_arr;
+        handler_args_arr[i]->ids_arr_ptr = ids_arr;
+        handler_args_arr[i]->flags_arr_ptr = flags_arr;
+        handler_args_arr[i]->reader_done = &reading_done;
+        handler_args_arr[i]->read_cnt = all_read_cnts[i];
+        handler_args_arr[i]->captured_segments = NULL;
+        pthread_create(&handler_threads[i], NULL, packet_handler_runner, (void*)handler_args_arr[i]);
+        
     }
 
     for (int i = 0; i < NUMBER_OF_READER_THREADS; i++) {
         pthread_join(reader_threads[i], NULL);
         // free(args_arr[i]);
-    }
+    }   
+
+    usleep(10);
+
+    for (int i = 0; i < NUMBER_OF_HANDLER_THREADS; i++) {
+        pthread_join(handler_threads[i], NULL);
+    }   
+
+    int total_cnt = 0;
+    for (int i=0; i<NUMBER_OF_HANDLER_THREADS; i++) total_cnt += *(all_read_cnts[i]);
+    printf("total number of signatures found: %d\n", total_cnt);
 
     // Concatenate all segments
     // int total_segments = 0;
@@ -444,16 +507,9 @@ int main(int argc, char *argv[]) {
 
     // printf("Segments extracted and written to %s\n", json_file);
     printf("Total UDP packets: %d\n", udp_packet_count);
-    printf("Total segments: %d\n", segment_count);
+    printf("Total segments: %d\n", total_cnt);
     printf("Elapsed time: %.2f seconds\n", elapsed_time);
 
-    int p_ctr = 0;
-    for (int i=0; i<NUM_ENTRIES; i++){
-        // printf("payload is |%s|\n",payloads_arr[i]);
-        if (payloads_arr[i][0] == 'S' && payloads_arr[i][1] == 'E' && payloads_arr[i][2] == 'G')
-            p_ctr++;
-    }
-    printf("p_ctr = %d\n", p_ctr);
     printf("done and done\n");
     return 0;
 }
