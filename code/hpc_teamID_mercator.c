@@ -48,10 +48,11 @@ void write_segments_to_json(segment_t *segments, int count, const char *filename
     json_decref(json_segments);
 }
 
-void write_payloads_to_json(char** payloads, int count, const char* filename){
+void write_payloads_to_json(char** payloads, int* ids, int count, const char* filename){
     json_t *json_segments = json_array();
     for (int i = 0; i < count; i++) {
         json_t *json_segment = json_object();
+        json_object_set_new(json_segment, "id", json_integer(ids[i]));
         json_object_set_new(json_segment, "payload", json_string(payloads[i]));
         json_array_append_new(json_segments, json_segment);
     }
@@ -178,8 +179,6 @@ typedef struct {
 typedef struct {
     pcap_t* handle;
     int thread_id;
-    int* arr_idx;
-    PayloadIDPair* payload_pairs_arr;
     char** payloads_arr;
     int* ids_arr;
     int* flags_arr;
@@ -205,10 +204,7 @@ pthread_mutex_t array_mutex = PTHREAD_MUTEX_INITIALIZER;    // a mutex lock used
 void* pcap_reader_runner(void* args) {
     ReaderArguments* arguments = (ReaderArguments*)args;
     pcap_t* handle = arguments->handle;
-    // int* mem_cnt = arguments->mem_cnt;
     int thread_id = arguments->thread_id;
-    int* arr_idx = arguments->arr_idx;
-
     char** payloads_arr_ptr = arguments->payloads_arr;
     int* ids_arr_ptr = arguments->ids_arr;
     int* flags_arr_ptr = arguments->flags_arr;
@@ -288,6 +284,7 @@ typedef struct {
     int *reader_done;
     int* read_cnt;
     char** captured_segments;
+    int* captured_ids;
 } HandlerArguments;
 
 pthread_mutex_t capture_mutex = PTHREAD_MUTEX_INITIALIZER; 
@@ -309,6 +306,7 @@ void* packet_handler_runner(void* args){
 
     int* read_cnt = arguments->read_cnt;
     char** captured_segments = arguments->captured_segments;
+    int* captured_ids = arguments->captured_ids;
 
     printf("- Worker thread initialized with id %d\n", thread_id);
     printf("\tpayloads_arr_ptr: %p \n\tids_arr_ptr: %p \n\tflags_arr_ptr: %p\n", payloads_arr_ptr, ids_arr_ptr, flags_arr_ptr);
@@ -351,6 +349,7 @@ void* packet_handler_runner(void* args){
                                 // }
                                 strncpy(captured_segments[*read_cnt], start, capture_len);
                                 captured_segments[*read_cnt][capture_len] = '\0';
+                                captured_ids[*read_cnt] = id;
                                 (*read_cnt)+=1;
                                 payload_str = end + 1;
                             } else {
@@ -429,7 +428,6 @@ int main(int argc, char *argv[]) {
 
     Arguments *args_arr[NUMBER_OF_READER_THREADS];
     segment_t segments[THREAD_MEM_SIZE * NUMBER_OF_READER_THREADS];
-    int mem_cnt[NUMBER_OF_READER_THREADS] = {0};
 
     int reading_done = 0;
     // printf("reading done = %d\n", reading_done);
@@ -440,9 +438,6 @@ int main(int argc, char *argv[]) {
         reader_args_arr[i] = malloc(sizeof(ReaderArguments));
         reader_args_arr[i]->handle = handle;
         reader_args_arr[i]->thread_id = i;
-        reader_args_arr[i]->arr_idx = (int*) malloc(sizeof(int));
-        (*reader_args_arr[i]->arr_idx) = 0;
-        reader_args_arr[i]->payload_pairs_arr = (PayloadIDPair*) malloc(sizeof(PayloadIDPair) * 10);
         reader_args_arr[i]->ids_arr = ids_arr;
         reader_args_arr[i]->payloads_arr = payloads_arr;
         reader_args_arr[i]->flags_arr = flags_arr;
@@ -463,6 +458,10 @@ int main(int argc, char *argv[]) {
             all_captured_segments[i][j] = (char*) malloc(sizeof(char) * MAX_STRING_LEN);
         }
     }
+    int** all_captured_ids = (int**) malloc(sizeof(int*) * NUMBER_OF_HANDLER_THREADS);
+    for (int i=0; i<NUMBER_OF_HANDLER_THREADS; i++){
+        all_captured_ids[i] = (int*) malloc(sizeof(int) * 100);
+    }
     HandlerArguments *handler_args_arr[NUMBER_OF_HANDLER_THREADS];
     for (int i=0; i<NUMBER_OF_HANDLER_THREADS; i++){
         handler_args_arr[i] = malloc(sizeof(HandlerArguments));
@@ -473,6 +472,7 @@ int main(int argc, char *argv[]) {
         handler_args_arr[i]->reader_done = &reading_done;
         handler_args_arr[i]->read_cnt = all_read_cnts[i];
         handler_args_arr[i]->captured_segments = all_captured_segments[i];
+        handler_args_arr[i]->captured_ids = all_captured_ids[i];
         pthread_create(&handler_threads[i], NULL, packet_handler_runner, (void*)handler_args_arr[i]);
     }
 
@@ -500,15 +500,17 @@ int main(int argc, char *argv[]) {
 
     int t_idx = 0;
     char** total_segments = (char**) malloc(sizeof(char*) * total_cnt);
+    int* total_ids = (int*) malloc(sizeof(int) * total_cnt);
     for (int i=0; i<NUMBER_OF_HANDLER_THREADS; i++){
         for (int j=0; j<*(all_read_cnts[i]); j++){
+            total_ids[t_idx] = all_captured_ids[i][j];
             total_segments[t_idx] = (char*) malloc(sizeof(char) * MAX_STRING_LEN);
             strncpy(total_segments[t_idx], all_captured_segments[i][j], MAX_STRING_LEN);
             t_idx ++;
         }
     }
 
-    write_payloads_to_json(total_segments, total_cnt, "./temp/output.json");
+    write_payloads_to_json(total_segments, total_ids, total_cnt, "./temp/output.json");
     printf("writing to json done\n");
 
     pcap_close(handle);
