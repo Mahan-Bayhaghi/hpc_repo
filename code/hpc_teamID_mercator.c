@@ -186,7 +186,7 @@ typedef struct {
 } ReaderArguments;
 
 
-#define NUM_ENTRIES 1000    // maximum number of packets saved on RAM at the same time
+#define NUM_ENTRIES 10000    // maximum number of packets saved on RAM at the same time
 char** payloads_arr;        // an array of strings used to save payloads of packets on memory
 int* ids_arr;               // an array of int used to save ids of packets on memory
 int* flags_arr;             // an array of int (flag 0/1) used to save if an idx of these 3 arrays are processed or not
